@@ -119,7 +119,7 @@
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeaderFile>
       </PrecompiledHeaderFile>
-      <AdditionalIncludeDirectories>../extern/meshoptimizer/src;../extern/fast_obj;../extern/volk;../extern/glm;../extern/glfw/include;$(VULKAN_SDK)\Include;third/fsr2/include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>../extern/meshoptimizer/src;../extern/fast_obj;../extern/volk;../extern/glm;../extern/glfw/include;$(VULKAN_SDK)\Include;../third/fsr2/include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -212,7 +212,6 @@
     <ClInclude Include="..\extern\glfw\src\win32_joystick.h" />
     <ClInclude Include="..\extern\glfw\src\win32_platform.h" />
     <ClInclude Include="..\extern\meshoptimizer\src\meshoptimizer.h" />
-    <ClInclude Include="..\extern\volk\volk.h" />
     <ClInclude Include="..\third\fsr2\include\ffx_assert.h" />
     <ClInclude Include="..\third\fsr2\include\ffx_error.h" />
     <ClInclude Include="..\third\fsr2\include\ffx_fsr2.h" />
@@ -269,7 +268,6 @@
     <ClCompile Include="..\extern\meshoptimizer\src\vertexcodec.cpp" />
     <ClCompile Include="..\extern\meshoptimizer\src\vfetchanalyzer.cpp" />
     <ClCompile Include="..\extern\meshoptimizer\src\vfetchoptimizer.cpp" />
-    <ClCompile Include="..\extern\volk\volk.c" />
     <ClCompile Include="device.cpp" />
     <ClCompile Include="fast_obj.cpp" />
     <ClCompile Include="niagara.cpp" />

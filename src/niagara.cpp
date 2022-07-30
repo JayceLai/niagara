@@ -6,6 +6,7 @@
 #include "swapchain.h"
 
 #include "math.h"
+#include "fsr2.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -17,14 +18,33 @@
 #include <GLFW/glfw3native.h>
 #include <fast_obj.h>
 #include <meshoptimizer.h>
+#include <ffx_fsr2.h>
+#include <vk/ffx_fsr2_vk.h>
 
-bool meshShadingEnabled = true;
+bool meshShadingEnabled = false;
 bool cullingEnabled = true;
 bool lodEnabled = true;
-bool occlusionEnabled = true;
+bool occlusionEnabled = false;
 
 bool debugPyramid = false;
 int debugPyramidLevel = 0;
+
+bool fsr2Enabled = true;
+//bool fsr2Enabled = false;
+
+float scaleFactor = 0.5;
+int displayWidth = 1024;
+int displayHeight = 768;
+int renderWidth = int(displayWidth * scaleFactor);
+int renderHeight = int(displayHeight * scaleFactor);
+
+PFN_vkCreateDebugReportCallbackEXT vkCreateDebugReportCallbackEXT_;
+PFN_vkCmdPushDescriptorSetWithTemplateKHR vkCmdPushDescriptorSetWithTemplateKHR_;
+PFN_vkDestroyDebugReportCallbackEXT vkDestroyDebugReportCallbackEXT_;
+PFN_vkCmdDrawMeshTasksIndirectCountNV vkCmdDrawMeshTasksIndirectCountNV_;
+PFN_vkCmdSetCheckpointNV vkCmdSetCheckpointNV_;
+PFN_vkGetQueueCheckpointDataNV vkGetQueueCheckpointDataNV_;
+PFN_vkSetDebugUtilsObjectNameEXT vkSetDebugUtilsObjectNameEXT_;
 
 mat4 view{ 1 };
 
@@ -445,7 +465,7 @@ uint32_t previousPow2(uint32_t v)
 	return r;
 }
 
-#define VK_CHECKPOINT(name) do { if (checkpointsSupported) vkCmdSetCheckpointNV(commandBuffer, name); } while (0)
+#define VK_CHECKPOINT(name) do { if (checkpointsSupported) vkCmdSetCheckpointNV_(commandBuffer, name); } while (0)
 
 int main(int argc, const char** argv)
 {
@@ -458,14 +478,17 @@ int main(int argc, const char** argv)
 	int rc = glfwInit();
 	assert(rc);
 
-	VK_CHECK(volkInitialize());
+	// VK_CHECK(volkInitialize());
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
 	VkInstance instance = createInstance();
 	assert(instance);
 
-	volkLoadInstanceOnly(instance);
+	// volkLoadInstanceOnly(instance);
+	vkCreateDebugReportCallbackEXT_ = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugReportCallbackEXT");
+	vkDestroyDebugReportCallbackEXT_ = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
+	vkSetDebugUtilsObjectNameEXT_ = (PFN_vkSetDebugUtilsObjectNameEXT)vkGetInstanceProcAddr(instance, "vkSetDebugUtilsObjectNameEXT");
 
 #ifdef _DEBUG
 	VkDebugReportCallbackEXT debugCallback = registerDebugCallback(instance);
@@ -507,9 +530,25 @@ int main(int argc, const char** argv)
 	VkDevice device = createDevice(instance, physicalDevice, familyIndex, pushDescriptorsSupported, checkpointsSupported, meshShadingSupported);
 	assert(device);
 
-	volkLoadDevice(device);
+	vkCmdPushDescriptorSetWithTemplateKHR_ = (PFN_vkCmdPushDescriptorSetWithTemplateKHR)vkGetDeviceProcAddr(device, "vkCmdPushDescriptorSetWithTemplateKHR");
+	vkCmdDrawMeshTasksIndirectCountNV_ = (PFN_vkCmdDrawMeshTasksIndirectCountNV)vkGetDeviceProcAddr(device, "vkCmdDrawMeshTasksIndirectCountNV");
+	vkCmdSetCheckpointNV_ = (PFN_vkCmdSetCheckpointNV)vkGetDeviceProcAddr(device, "vkCmdSetCheckpointNV");
+	vkGetQueueCheckpointDataNV_ = (PFN_vkGetQueueCheckpointDataNV)vkGetDeviceProcAddr(device, "vkGetQueueCheckpointDataNV");
 
-	GLFWwindow* window = glfwCreateWindow(1024, 768, "niagara", 0, 0);
+	FfxFsr2ContextDescription initializationParameters{};
+	FfxFsr2Context fsr2Context{};
+	if (fsr2Enabled)
+	{
+		// Setup VK interface.
+		const size_t scratchBufferSize = ffxFsr2GetScratchMemorySizeVK(physicalDevice);
+		void* scratchBuffer = malloc(scratchBufferSize);
+		FfxErrorCode errorCode = ffxFsr2GetInterfaceVK(&initializationParameters.callbacks, scratchBuffer, scratchBufferSize, physicalDevice, vkGetDeviceProcAddr);
+		FFX_ASSERT(errorCode == FFX_OK);
+	}
+
+	// volkLoadDevice(device);
+
+	GLFWwindow* window = glfwCreateWindow(displayWidth, displayHeight, "niagara", 0, 0);
 	assert(window);
 
 	glfwSetKeyCallback(window, keyCallback);
@@ -688,7 +727,8 @@ int main(int argc, const char** argv)
 		uploadBuffer(device, commandPool, commandBuffer, queue, mdb, scratch, geometry.meshletdata.data(), geometry.meshletdata.size() * sizeof(uint32_t));
 	}
 
-	uint32_t drawCount = 1000000;
+	//uint32_t drawCount = 1000000;
+	uint32_t drawCount = 1000000 / 2;
 	std::vector<MeshDraw> draws(drawCount);
 
 	srand(42);
@@ -735,6 +775,10 @@ int main(int argc, const char** argv)
 
 	Image colorTarget = {};
 	Image depthTarget = {};
+	Image motionVector = {};
+	Image reactive = {};
+	Image transparecyAndComposition = {};
+	Image resolveColorTarget = {};
 
 	Image depthPyramid = {};
 	VkImageView depthPyramidMips[16] = {};
@@ -760,6 +804,10 @@ int main(int argc, const char** argv)
 
 		if (swapchainStatus == Swapchain_Resized || !colorTarget.image)
 		{
+			glfwGetWindowSize(window, &displayWidth, &displayHeight);
+			renderWidth = int(displayWidth * scaleFactor);
+			renderHeight = int(displayHeight * scaleFactor);
+
 			if (colorTarget.image)
 				destroyImage(colorTarget, device);
 			if (depthTarget.image)
@@ -772,20 +820,43 @@ int main(int argc, const char** argv)
 				destroyImage(depthPyramid, device);
 			}
 
-			createImage(colorTarget, device, memoryProperties, swapchain.width, swapchain.height, 1, swapchainFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-			createImage(depthTarget, device, memoryProperties, swapchain.width, swapchain.height, 1, depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+			createImage(colorTarget, device, memoryProperties, renderWidth, renderHeight, 1, swapchainFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, L"input_color");
+			createImage(depthTarget, device, memoryProperties, renderWidth, renderHeight, 1, depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, L"input_depth");
 
 			// Note: previousPow2 makes sure all reductions are at most by 2x2 which makes sure they are conservative
-			depthPyramidWidth = previousPow2(swapchain.width);
-			depthPyramidHeight = previousPow2(swapchain.height);
+			depthPyramidWidth = previousPow2(renderWidth);
+			depthPyramidHeight = previousPow2(renderHeight);
 			depthPyramidLevels = getImageMipLevels(depthPyramidWidth, depthPyramidHeight);
 
-			createImage(depthPyramid, device, memoryProperties, depthPyramidWidth, depthPyramidHeight, depthPyramidLevels, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+			createImage(depthPyramid, device, memoryProperties, depthPyramidWidth, depthPyramidHeight, depthPyramidLevels, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, L"depth_pyramid");
 
 			for (uint32_t i = 0; i < depthPyramidLevels; ++i)
 			{
 				depthPyramidMips[i] = createImageView(device, depthPyramid.image, VK_FORMAT_R32_SFLOAT, i, 1);
 				assert(depthPyramidMips[i]);
+			}
+
+			if (fsr2Enabled)
+			{
+				if (std::any_of(std::begin(fsr2Context.data), std::end(fsr2Context.data), [](auto v) { return v != 0; })) ffxFsr2ContextDestroy(&fsr2Context);
+
+				initializationParameters.device = ffxGetDeviceVK(device);
+				initializationParameters.maxRenderSize.width = renderWidth;
+				initializationParameters.maxRenderSize.height = renderHeight;
+				initializationParameters.displaySize.width = displayWidth;
+				initializationParameters.displaySize.height = displayHeight;
+				initializationParameters.flags = FFX_FSR2_ENABLE_DEPTH_INVERTED | FFX_FSR2_ENABLE_AUTO_EXPOSURE;
+				if (bool hdr = false) initializationParameters.flags |= FFX_FSR2_ENABLE_HIGH_DYNAMIC_RANGE;
+				ffxFsr2ContextCreate(&fsr2Context, &initializationParameters);
+
+				if (resolveColorTarget.image) destroyImage(resolveColorTarget, device);
+				if (motionVector.image) destroyImage(motionVector, device);
+				if (reactive.image) destroyImage(reactive, device);
+				if (transparecyAndComposition.image) destroyImage(transparecyAndComposition, device);
+				createImage(resolveColorTarget, device, memoryProperties, displayWidth, displayHeight, 1, swapchainFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, L"resolve_olor");
+				createImage(motionVector, device, memoryProperties, renderWidth, renderHeight, 1, swapchainFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, L"motion_vector");
+				createImage(reactive, device, memoryProperties, renderWidth, renderHeight, 1, swapchainFormat, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, L"reactive");
+				createImage(transparecyAndComposition, device, memoryProperties, renderWidth, renderHeight, 1, swapchainFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, L"transparecy_composition");
 			}
 		}
 
@@ -820,8 +891,9 @@ int main(int argc, const char** argv)
 		}
 
 		float znear = 0.5f;
+		float fovY = glm::radians(70.f);
 		mat4 view = moveViewMatrix(window, (float)frameCpuAvg);
-		mat4 projection = perspectiveProjection(glm::radians(70.f), float(swapchain.width) / float(swapchain.height), znear) * view;
+		mat4 projection = perspectiveProjection(fovY, float(renderWidth) / float(renderHeight), znear) * view;
 
 		mat4 projectionT = transpose(projection);
 
@@ -864,12 +936,12 @@ int main(int argc, const char** argv)
 			if (checkpointsSupported)
 			{
 				uint32_t checkpointCount = 0;
-				vkGetQueueCheckpointDataNV(queue, &checkpointCount, 0);
+				vkGetQueueCheckpointDataNV_(queue, &checkpointCount, 0);
 
 				std::vector<VkCheckpointDataNV> checkpoints(checkpointCount, { VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV });
-				vkGetQueueCheckpointDataNV(queue, &checkpointCount, checkpoints.data());
+				vkGetQueueCheckpointDataNV_(queue, &checkpointCount, checkpoints.data());
 
-				for (auto& cp: checkpoints)
+				for (auto& cp : checkpoints)
 				{
 					printf("NV CHECKPOINT: stage %08x name %s\n", cp.stage, cp.pCheckpointMarker ? static_cast<const char*>(cp.pCheckpointMarker) : "??");
 				}
@@ -903,7 +975,7 @@ int main(int argc, const char** argv)
 		{
 			if (pushDescriptorsSupported)
 			{
-				vkCmdPushDescriptorSetWithTemplateKHR(commandBuffer, program.updateTemplate, program.layout, 0, descriptors);
+				vkCmdPushDescriptorSetWithTemplateKHR_(commandBuffer, program.updateTemplate, program.layout, 0, descriptors);
 			}
 			else
 			{
@@ -966,7 +1038,7 @@ int main(int argc, const char** argv)
 
 			DescriptorInfo pyramidDesc(depthSampler, depthPyramid.imageView, VK_IMAGE_LAYOUT_GENERAL);
 			DescriptorInfo descriptors[] = { db.buffer, mb.buffer, dcb.buffer, dccb.buffer, dvb.buffer, pyramidDesc };
-			// vkCmdPushDescriptorSetWithTemplateKHR(commandBuffer, drawcullProgram.updateTemplate, drawcullProgram.layout, 0, descriptors);
+			// vkCmdPushDescriptorSetWithTemplateKHR_(commandBuffer, drawcullProgram.updateTemplate, drawcullProgram.layout, 0, descriptors);
 			pushDescriptors(drawcullProgram, descriptors);
 
 			vkCmdPushConstants(commandBuffer, drawcullProgram.layout, drawcullProgram.pushConstantStages, 0, sizeof(cullData), &cullData);
@@ -1010,8 +1082,8 @@ int main(int argc, const char** argv)
 			depthAttachment.clearValue.depthStencil = depthClear;
 
 			VkRenderingInfo passInfo = { VK_STRUCTURE_TYPE_RENDERING_INFO };
-			passInfo.renderArea.extent.width = swapchain.width;
-			passInfo.renderArea.extent.height = swapchain.height;
+			passInfo.renderArea.extent.width = renderWidth;
+			passInfo.renderArea.extent.height = renderHeight;
 			passInfo.layerCount = 1;
 			passInfo.colorAttachmentCount = 1;
 			passInfo.pColorAttachments = &colorAttachment;
@@ -1019,8 +1091,8 @@ int main(int argc, const char** argv)
 
 			vkCmdBeginRendering(commandBuffer, &passInfo);
 
-			VkViewport viewport = { 0, float(swapchain.height), float(swapchain.width), -float(swapchain.height), 0, 1 };
-			VkRect2D scissor = { {0, 0}, {uint32_t(swapchain.width), uint32_t(swapchain.height)} };
+			VkViewport viewport = { 0, float(renderHeight), float(renderWidth), -float(renderHeight), 0, 1 };
+			VkRect2D scissor = { {0, 0}, {uint32_t(renderWidth), uint32_t(renderHeight)} };
 
 			vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
@@ -1032,18 +1104,18 @@ int main(int argc, const char** argv)
 				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipelineMS);
 
 				DescriptorInfo descriptors[] = { dcb.buffer, db.buffer, mlb.buffer, mdb.buffer, vb.buffer };
-				// vkCmdPushDescriptorSetWithTemplateKHR(commandBuffer, meshProgramMS.updateTemplate, meshProgramMS.layout, 0, descriptors);
+				// vkCmdPushDescriptorSetWithTemplateKHR_(commandBuffer, meshProgramMS.updateTemplate, meshProgramMS.layout, 0, descriptors);
 				pushDescriptors(meshProgramMS, descriptors);
 
 				vkCmdPushConstants(commandBuffer, meshProgramMS.layout, meshProgramMS.pushConstantStages, 0, sizeof(globals), &globals);
-				vkCmdDrawMeshTasksIndirectCountNV(commandBuffer, dcb.buffer, offsetof(MeshDrawCommand, indirectMS), dccb.buffer, 0, uint32_t(draws.size()), sizeof(MeshDrawCommand));
+				vkCmdDrawMeshTasksIndirectCountNV_(commandBuffer, dcb.buffer, offsetof(MeshDrawCommand, indirectMS), dccb.buffer, 0, uint32_t(draws.size()), sizeof(MeshDrawCommand));
 			}
 			else
 			{
 				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline);
 
 				DescriptorInfo descriptors[] = { dcb.buffer, db.buffer, vb.buffer };
-				// vkCmdPushDescriptorSetWithTemplateKHR(commandBuffer, meshProgram.updateTemplate, meshProgram.layout, 0, descriptors);
+				// vkCmdPushDescriptorSetWithTemplateKHR_(commandBuffer, meshProgram.updateTemplate, meshProgram.layout, 0, descriptors);
 				pushDescriptors(meshProgram, descriptors);
 
 				vkCmdBindIndexBuffer(commandBuffer, ib.buffer, 0, VK_INDEX_TYPE_UINT32);
@@ -1089,7 +1161,7 @@ int main(int argc, const char** argv)
 					: DescriptorInfo(depthSampler, depthPyramidMips[i - 1], VK_IMAGE_LAYOUT_GENERAL);
 
 				DescriptorInfo descriptors[] = { { depthPyramidMips[i], VK_IMAGE_LAYOUT_GENERAL }, sourceDepth };
-				// vkCmdPushDescriptorSetWithTemplateKHR(commandBuffer, depthreduceProgram.updateTemplate, depthreduceProgram.layout, 0, descriptors);
+				// vkCmdPushDescriptorSetWithTemplateKHR_(commandBuffer, depthreduceProgram.updateTemplate, depthreduceProgram.layout, 0, descriptors);
 				pushDescriptors(depthreduceProgram, descriptors);
 
 				uint32_t levelWidth = std::max(1u, depthPyramidWidth >> i);
@@ -1154,11 +1226,90 @@ int main(int argc, const char** argv)
 		// late render: render objects that are visible this frame but weren't drawn in the early pass
 		render(/* late= */ true, colorClear, depthClear, 1, "late render");
 
-		VkImageMemoryBarrier2 copyBarriers[] =
+		if (fsr2Enabled)
 		{
+			VK_CHECKPOINT("fsr2");
+
+			//VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			VkImageMemoryBarrier2 imgBarriers[] = {
+				imageBarrier(colorTarget.image,
+					VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT),
+				imageBarrier(depthTarget.image,
+					VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT),
+				imageBarrier(transparecyAndComposition.image,
+					VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT),
+				imageBarrier(reactive.image,
+					VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT),
+				imageBarrier(motionVector.image,
+					VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT),
+				imageBarrier(resolveColorTarget.image,
+					VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_ASPECT_COLOR_BIT),
+			};
+
+			pipelineBarrier(commandBuffer, VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, COUNTOF(imgBarriers), imgBarriers);
+
+			std::wstring exposureName = L"FSR2_InputExposure";
+
+			bool bReset = false;
+			bool bUseRcas = false;
+			FfxFsr2DispatchDescription dispatchParameters = {};
+			dispatchParameters.commandList = ffxGetCommandListVK(commandBuffer);
+			dispatchParameters.depth = ffxGetTextureResourceVK(&fsr2Context, depthTarget.image, depthTarget.imageView, depthTarget.width, depthTarget.height, depthTarget.format, const_cast<wchar_t*>(depthTarget.wname.c_str()));
+			dispatchParameters.color = ffxGetTextureResourceVK(&fsr2Context, colorTarget.image, colorTarget.imageView, colorTarget.width, colorTarget.height, colorTarget.format, const_cast<wchar_t*>(colorTarget.wname.c_str()));
+			dispatchParameters.motionVectors = ffxGetTextureResourceVK(&fsr2Context, motionVector.image, motionVector.imageView, depthTarget.width, depthTarget.height, motionVector.format, const_cast<wchar_t*>(motionVector.wname.c_str()));
+			dispatchParameters.exposure = ffxGetTextureResourceVK(&fsr2Context, nullptr, nullptr, 1, 1, VK_FORMAT_UNDEFINED, const_cast<wchar_t*>(exposureName.c_str()));
+			dispatchParameters.reactive = ffxGetTextureResourceVK(&fsr2Context, reactive.image, reactive.imageView, reactive.width, reactive.height, reactive.format, const_cast<wchar_t*>(reactive.wname.c_str()));
+			dispatchParameters.transparencyAndComposition = ffxGetTextureResourceVK(&fsr2Context, transparecyAndComposition.image, transparecyAndComposition.imageView, transparecyAndComposition.width, transparecyAndComposition.height, transparecyAndComposition.format, const_cast<wchar_t*>(transparecyAndComposition.wname.c_str()));
+			dispatchParameters.output = ffxGetTextureResourceVK(&fsr2Context, resolveColorTarget.image, resolveColorTarget.imageView, resolveColorTarget.width, resolveColorTarget.height, resolveColorTarget.format, const_cast<wchar_t*>(resolveColorTarget.wname.c_str()), FFX_RESOURCE_STATE_UNORDERED_ACCESS);
+			dispatchParameters.cameraFar = drawDistance;
+			dispatchParameters.cameraNear = znear;
+			dispatchParameters.cameraFovAngleVertical = fovY;
+			dispatchParameters.jitterOffset.x = -0.25f;
+			dispatchParameters.jitterOffset.y = 1.0f / 60;
+			dispatchParameters.reset = bReset;
+			dispatchParameters.enableSharpening = bUseRcas;
+			dispatchParameters.sharpness = 0.8f;
+			dispatchParameters.frameTimeDelta = float(frameCpuAvg);
+			dispatchParameters.preExposure = 1.0f;
+			dispatchParameters.renderSize.width = uint32_t(renderWidth);
+			dispatchParameters.renderSize.height = uint32_t(renderHeight);
+			dispatchParameters.motionVectorScale.x = float(renderWidth);
+			dispatchParameters.motionVectorScale.y = float(renderHeight);
+			FfxErrorCode errorCode = ffxFsr2ContextDispatch(&fsr2Context, &dispatchParameters);
+			FFX_ASSERT(errorCode == FFX_OK);
+		}
+
+		VK_CHECKPOINT("swapchain copy");
+
+		if (fsr2Enabled)
+		{
+			VkImageMemoryBarrier2 copyBarriers[] =
+			{
+			imageBarrier(resolveColorTarget.image,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL),
+			};
+			pipelineBarrier(commandBuffer, VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, COUNTOF(copyBarriers), copyBarriers);
+		}
+		else
+		{
+			VkImageMemoryBarrier2 copyBarriers[] =
+			{
 			imageBarrier(colorTarget.image,
 				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL),
+			};
+			pipelineBarrier(commandBuffer, VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, COUNTOF(copyBarriers), copyBarriers);
+		}
+
+		VkImageMemoryBarrier2 copyBarriers[] =
+		{
 			imageBarrier(swapchain.images[imageIndex],
 				0, 0, VK_IMAGE_LAYOUT_UNDEFINED,
 				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL),
@@ -1166,10 +1317,7 @@ int main(int argc, const char** argv)
 				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
 				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL),
 		};
-
 		pipelineBarrier(commandBuffer, VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, COUNTOF(copyBarriers), copyBarriers);
-
-		VK_CHECKPOINT("swapchain copy");
 
 		if (debugPyramid)
 		{
@@ -1185,20 +1333,21 @@ int main(int argc, const char** argv)
 			blitRegion.srcOffsets[0] = { 0, 0, 0 };
 			blitRegion.srcOffsets[1] = { int32_t(levelWidth), int32_t(levelHeight), 1 };
 			blitRegion.dstOffsets[0] = { 0, 0, 0 };
-			blitRegion.dstOffsets[1] = { int32_t(swapchain.width), int32_t(swapchain.height), 1 };
+			blitRegion.dstOffsets[1] = { int32_t(renderWidth), int32_t(renderHeight), 1 };
 
 			vkCmdBlitImage(commandBuffer, depthPyramid.image, VK_IMAGE_LAYOUT_GENERAL, swapchain.images[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blitRegion, VK_FILTER_NEAREST);
 		}
 		else
 		{
+			Image& outputTarget = fsr2Enabled ? resolveColorTarget : colorTarget;
 			VkImageCopy copyRegion = {};
 			copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			copyRegion.srcSubresource.layerCount = 1;
 			copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			copyRegion.dstSubresource.layerCount = 1;
-			copyRegion.extent = { swapchain.width, swapchain.height, 1 };
+			copyRegion.extent = { outputTarget.width, outputTarget.height, 1 };
 
-			vkCmdCopyImage(commandBuffer, colorTarget.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchain.images[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+			vkCmdCopyImage(commandBuffer, outputTarget.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchain.images[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 		}
 
 		VK_CHECKPOINT("present");
@@ -1280,6 +1429,14 @@ int main(int argc, const char** argv)
 	if (depthTarget.image)
 		destroyImage(depthTarget, device);
 
+	if (fsr2Enabled)
+	{
+		if (resolveColorTarget.image) destroyImage(resolveColorTarget, device);
+		if (motionVector.image) destroyImage(motionVector, device);
+		if (reactive.image) destroyImage(reactive, device);
+		if (transparecyAndComposition.image) destroyImage(transparecyAndComposition, device);
+	}
+
 	if (depthPyramid.image)
 	{
 		for (uint32_t i = 0; i < depthPyramidLevels; ++i)
@@ -1352,11 +1509,14 @@ int main(int argc, const char** argv)
 
 	glfwDestroyWindow(window);
 
+	if (fsr2Enabled) ffxFsr2ContextDestroy(&fsr2Context);
+
 	vkDestroyDevice(device, 0);
 
 #ifdef _DEBUG
-	vkDestroyDebugReportCallbackEXT(instance, debugCallback, 0);
+	vkDestroyDebugReportCallbackEXT_(instance, debugCallback, 0);
 #endif
 
 	vkDestroyInstance(instance, 0);
 }
+

@@ -12,7 +12,7 @@
 
 VkInstance createInstance()
 {
-	assert(volkGetInstanceVersion() >= VK_API_VERSION_1_3);
+	// assert(volkGetInstanceVersion() >= VK_API_VERSION_1_3);
 
 	VkApplicationInfo appInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
 	appInfo.apiVersion = VK_API_VERSION_1_3;
@@ -56,6 +56,7 @@ VkInstance createInstance()
 #ifdef _DEBUG
 		VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
 #endif
+		VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
 	};
 
 	createInfo.ppEnabledExtensionNames = extensions;
@@ -103,7 +104,7 @@ VkDebugReportCallbackEXT registerDebugCallback(VkInstance instance)
 	createInfo.pfnCallback = debugReportCallback;
 
 	VkDebugReportCallbackEXT callback = 0;
-	VK_CHECK(vkCreateDebugReportCallbackEXT(instance, &createInfo, 0, &callback));
+	VK_CHECK(vkCreateDebugReportCallbackEXT_(instance, &createInfo, 0, &callback));
 
 	return callback;
 }

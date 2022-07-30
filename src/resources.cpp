@@ -1,6 +1,6 @@
 #include "common.h"
 #include "resources.h"
-
+#include <codecvt>
 #include <string.h>
 
 VkImageMemoryBarrier2 imageBarrier(VkImage image, VkPipelineStageFlags2 srcStageMask, VkAccessFlags2 srcAccessMask, VkImageLayout oldLayout, VkPipelineStageFlags2 dstStageMask, VkAccessFlags2 dstAccessMask, VkImageLayout newLayout, VkImageAspectFlags aspectMask)
@@ -170,7 +170,7 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, uin
 	return view;
 }
 
-void createImage(Image& result, VkDevice device, const VkPhysicalDeviceMemoryProperties& memoryProperties, uint32_t width, uint32_t height, uint32_t mipLevels, VkFormat format, VkImageUsageFlags usage)
+void createImage(Image& result, VkDevice device, const VkPhysicalDeviceMemoryProperties& memoryProperties, uint32_t width, uint32_t height, uint32_t mipLevels, VkFormat format, VkImageUsageFlags usage, const wchar_t* name)
 {
 	VkImageCreateInfo createInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 
@@ -205,6 +205,20 @@ void createImage(Image& result, VkDevice device, const VkPhysicalDeviceMemoryPro
 	result.image = image;
 	result.imageView = createImageView(device, image, format, 0, mipLevels);
 	result.memory = memory;
+	result.format = format;
+	result.width = width;
+	result.height = height;
+	result.wname = name;
+	
+	std::wstring_convert<std::codecvt_utf8<wchar_t>, wchar_t> converter;;
+	result.name = converter.to_bytes(result.wname);
+
+	VkDebugUtilsObjectNameInfoEXT debugObjectNameInfo{};
+	debugObjectNameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+	debugObjectNameInfo.pObjectName = result.name.c_str();
+	debugObjectNameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+	debugObjectNameInfo.objectHandle = intptr_t(image);
+	vkSetDebugUtilsObjectNameEXT_(device, &debugObjectNameInfo);
 }
 
 void destroyImage(const Image& image, VkDevice device)

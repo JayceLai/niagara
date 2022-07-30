@@ -7,9 +7,6 @@
     <Filter Include="shaders">
       <UniqueIdentifier>{b283ce06-b181-447e-95a3-153f7b0de899}</UniqueIdentifier>
     </Filter>
-    <Filter Include="volk">
-      <UniqueIdentifier>{42ef637f-ebad-4b52-9765-8d79b5a3cb9e}</UniqueIdentifier>
-    </Filter>
     <Filter Include="meshoptimizer">
       <UniqueIdentifier>{960b33bb-e128-4112-8520-2752ddeec8ce}</UniqueIdentifier>
     </Filter>
@@ -32,9 +29,6 @@
     </ClInclude>
     <ClInclude Include="..\extern\glfw\src\osmesa_context.h">
       <Filter>glfw</Filter>
-    </ClInclude>
-    <ClInclude Include="..\extern\volk\volk.h">
-      <Filter>volk</Filter>
     </ClInclude>
     <ClInclude Include="..\extern\meshoptimizer\src\meshoptimizer.h">
       <Filter>meshoptimizer</Filter>
@@ -139,9 +133,6 @@
     </ClCompile>
     <ClCompile Include="..\extern\glfw\src\vulkan.c">
       <Filter>glfw</Filter>
-    </ClCompile>
-    <ClCompile Include="..\extern\volk\volk.c">
-      <Filter>volk</Filter>
     </ClCompile>
     <ClCompile Include="..\extern\meshoptimizer\src\indexcodec.cpp">
       <Filter>meshoptimizer</Filter>
