@@ -26,6 +26,64 @@ bool occlusionEnabled = true;
 bool debugPyramid = false;
 int debugPyramidLevel = 0;
 
+mat4 view{ 1 };
+
+mat4 moveViewMatrix(GLFWwindow* window, float dt) {
+	float speed = 0.02f;
+	vec3 translate = vec3();
+	mat4 rotation = mat4(1);
+
+	int state = glfwGetKey(window, GLFW_KEY_W);
+	if (state == GLFW_PRESS || state == GLFW_REPEAT)
+		translate.z -= dt * speed;
+	state = glfwGetKey(window, GLFW_KEY_S);
+	if (state == GLFW_PRESS || state == GLFW_REPEAT)
+		translate.z += dt * speed;
+	state = glfwGetKey(window, GLFW_KEY_A);
+	if (state == GLFW_PRESS || state == GLFW_REPEAT)
+		translate.x += dt * speed;
+	state = glfwGetKey(window, GLFW_KEY_D);
+	if (state == GLFW_PRESS || state == GLFW_REPEAT)
+		translate.x -= dt * speed;
+	state = glfwGetKey(window, GLFW_KEY_Q);
+	if (state == GLFW_PRESS || state == GLFW_REPEAT)
+		translate.y -= dt * speed;
+	state = glfwGetKey(window, GLFW_KEY_E);
+	if (state == GLFW_PRESS || state == GLFW_REPEAT)
+		translate.y += dt * speed;
+
+	static double xposOld, yposOld = 0;
+	if (int state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT))
+	{
+		double xpos, ypos;
+		glfwGetCursorPos(window, &xpos, &ypos);
+
+		float xDelta = float(xpos - xposOld);
+		float yDelta = float(ypos - yposOld);
+		rotation = glm::rotate(rotation, xDelta * dt * speed / 100, glm::vec3{ 0, 1, 0 });
+		rotation = glm::rotate(rotation, yDelta * dt * speed / 100, glm::vec3{ 1, 0, 0 });
+		xposOld = xpos;
+		yposOld = ypos;
+	}
+	else
+	{
+		glfwGetCursorPos(window, &xposOld, &yposOld);
+	}
+
+	mat3 viewRotateMat = view;
+	translate = translate * viewRotateMat;
+	view = view * rotation;
+	view = glm::translate(view, translate);
+
+	vec3 upAxis = vec3(0.f, 1.f, 0.f);
+	vec3 lookAt = glm::normalize(vec3(view[2][0], view[2][1], view[2][2]));
+	vec3 xAxis = glm::normalize(glm::cross(upAxis, lookAt));
+	vec3 yAxis = glm::normalize(glm::cross(lookAt, xAxis));
+	view[0] = vec4(xAxis, 0.f);
+	view[1] = vec4(yAxis, 0.f);
+	return view;
+}
+
 #define SHADER_PATH "src/shaders/"
 
 VkSemaphore createSemaphore(VkDevice device)
@@ -762,7 +820,8 @@ int main(int argc, const char** argv)
 		}
 
 		float znear = 0.5f;
-		mat4 projection = perspectiveProjection(glm::radians(70.f), float(swapchain.width) / float(swapchain.height), znear);
+		mat4 view = moveViewMatrix(window, (float)frameCpuAvg);
+		mat4 projection = perspectiveProjection(glm::radians(70.f), float(swapchain.width) / float(swapchain.height), znear) * view;
 
 		mat4 projectionT = transpose(projection);
 
