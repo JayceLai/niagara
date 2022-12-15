@@ -15,6 +15,8 @@ set_target_properties(niagara PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED Y
 
 target_compile_definitions(niagara PRIVATE GLFW_INCLUDE_NONE GLM_FORCE_XYZW_ONLY GLM_FORCE_QUAT_DATA_XYZW)
 target_include_directories(niagara PRIVATE extern/fast_obj)
+target_include_directories(niagara PRIVATE third/fsr2/include)
+target_link_directories(niagara PRIVATE third/fsr2/lib)
 
 if(UNIX)
   target_compile_definitions(niagara PRIVATE VK_USE_PLATFORM_XLIB_KHR GLFW_EXPOSE_NATIVE_X11)
@@ -35,7 +37,9 @@ target_link_libraries(niagara
     glfw
     glm::glm
     volk
-    meshoptimizer)
+    meshoptimizer
+    ffx_fsr2_api_x64d.lib
+    ffx_fsr2_api_vk_x64d.lib)
 
 if(UNIX)
   set(GLSL_VALIDATOR "glslangValidator")
